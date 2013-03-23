@@ -9,6 +9,6 @@ Your steps are very straightforward:
 
     - You call mkstatic binary_file
     - Copy result-file (binary_file.static) to target host
-    - Launch your/binary_file.static [the same usage as original
+    - Launch your/binary_file.static (the same usage as using original binary_file)
 
 You may see details and options using mkstatic --man
