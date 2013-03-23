@@ -47,7 +47,7 @@ sub transform_lib_list($) {
     foreach (@libs) {
         next if $_ eq "";
         if (/-l(.*)/) {
-            push @arr, "^lib$1\..+";
+            push @arr, "^lib$1\\..+";
         }
         else {
             die "Bad format of libexpr: \"$_\"";
@@ -137,7 +137,12 @@ print $OF "\n";
 
 print $OF <<EXTRACT_SECTION
 FAKEROOT=`mktemp -d -t ${binfile_name}.data.XXXXXXX`
-trap "rm -rf '\$FAKEROOT'" EXIT
+if [ -z \$MKSTATIC_DEBUG ]; then
+    trap "rm -rf '\$FAKEROOT'" EXIT
+else
+    echo "*** debug mode enabled: will not remove \${FAKEROOT} after exit" >&2
+    set -x
+fi
 
 if [ -z \$TAR_OFFSET ]; then
     echo "*** Something wrong with pack" >&2
@@ -212,7 +217,7 @@ print "executable package is ready: $outfile\n";
 __END__
 =head1 mkstatic
 
-make executable all-in-one package wich contains binary and it's libraries.
+make executable all-in-one package which contains binary and it's libraries.
 
 =head1 SYNOPSIS
 
@@ -279,7 +284,7 @@ o  You launching mkstatic
 
 - it collects all dependencied of your binary_file (and remembers symlinks to libraries)
 
-- it creates .tgz wich is actually placed in Shell-file. This archive includes binary, libraries and bootstapping code
+- it creates .tgz which is actually placed in Shell-file. This archive includes binary, libraries and bootstrapping code
 
 - that's all - binary file with .static suffix is your resulting file
 
@@ -296,6 +301,21 @@ o  You launching binary.static
 - fix LD_LIBRARY_PATH to point to tempdir
 
 - launch your binary passing all arguments as usual
+
+=back
+
+=head1 ADVANCED USAGE
+
+When you using binary.static you can't pass arguments to shell script itself: all of them bypassing transparently to original binary.
+So, the only way to tune bootstrap-code is environment variables:
+
+=over 8
+
+- MKSTATIC_DEBUG - being set causes binary.static to hold temporary directory after exit.
+
+- MKSTATIC_EXEC_PREFIX - prefix binary launching with given command. For example, use env MKSTATIC_EXEC_PREFIX='gdb --args' ... if you want to debug your original binary.
+
+- LD_LIBRARY_PATH - doesn't have special meaning. Just preserved.
 
 =back
 
