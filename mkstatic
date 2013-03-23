@@ -1,0 +1,318 @@
+#!/usr/bin/perl -w
+use strict;
+
+use Getopt::Long qw( :config no_ignore_case gnu_compat bundling );
+use File::Spec;
+use File::Basename;
+use Cwd;
+use Fcntl qw( :mode );
+use Pod::Usage;
+
+# We have to exclude system libs. In another way even ld.so (!) will coredump
+use constant DEFAULT_EXCLUDE => "-lc -ldl -lrt -lm -lpthread";
+
+my %libraries;
+my %symlinks;
+my @g_exclude;
+my $verbose = 0;
+
+sub readlink_f($) {
+    my $f = shift;
+
+    while(-l $f) {
+        my $link = readlink($f);
+        if ($link !~ /^\//) {
+            $f = File::Spec->canonpath(dirname($f) . '/' . $link);
+        }
+    }
+
+    return $f;
+}
+
+sub is_excluded($) {
+    my $filename = basename(shift);
+    foreach (@g_exclude) {
+        if ($filename =~ $_) {
+            log_message("Exclude $filename");
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+sub transform_lib_list($) {
+    my @arr = ();
+    my @libs = split /\s+/, shift;
+    foreach (@libs) {
+        next if $_ eq "";
+        if (/-l(.*)/) {
+            push @arr, "^lib$1\..+";
+        }
+        else {
+            die "Bad format of libexpr: \"$_\"";
+        }
+    }
+
+    return @arr;
+}
+
+sub collect_deps {
+    my $file = shift;
+    open(my $LDDRES, "ldd $file |");
+    while(<$LDDRES>) {
+        chomp;
+        if (/(\S+) => (\S+) \(\S+\)/) {
+            my ($name, $path) = ( $1, $2 );
+            my $file = $path;
+
+            if (!is_excluded($path)) {
+                if (-l $path) {
+                    $file = readlink_f($path);
+                    $symlinks{$path} = $file;
+                }
+
+                unless (exists $libraries{$file} && !is_excluded($file)) {
+                    $libraries{$file} = 1;
+                    collect_deps($file);
+                }
+            }
+        }
+    }
+
+    close($LDDRES);
+}
+
+sub log_message {
+    print(shift, "\n") if $verbose;
+}
+
+
+#################################################################$$$$$$$$$$$$$$
+## MAIN
+#################################################################$$$$$$$$$$$$$$
+
+my $show_help;
+my $show_man;
+my $exclude_libs = "";
+my $dont_exclude_syslibs;
+my $outfile;
+
+my $result = GetOptions ("verbose|v"     => \$verbose,
+                         "exclude|e=s"   => \$exclude_libs,
+                         "outfile|o=s"   => \$outfile,
+                         "include-sys-libs|E"   => \$dont_exclude_syslibs,
+                         "man"           => \$show_man,
+                         "help|h"        => \$show_help
+                        ) or pod2usage(1);
+
+pod2usage(-exitstatus => 0, -verbose => 1) if $show_help;
+pod2usage(-exitstatus => 0, -verbose => 2) if $show_man;
+pod2usage(1) if (scalar(@ARGV) != 1);
+
+
+my $binfile = Cwd::abs_path($ARGV[0]);
+$outfile = $binfile . ".static" unless defined($outfile);
+my $binfile_name = basename($binfile);
+
+unless (defined $dont_exclude_syslibs) {
+    $exclude_libs .= ' ' . DEFAULT_EXCLUDE;
+}
+
+@g_exclude = transform_lib_list($exclude_libs);
+collect_deps($binfile);
+
+open (my $OF, '>', $outfile) or die "Failed to open file $outfile: $!";
+print $OF <<HEADER
+#/bin/sh -e
+
+HEADER
+;
+
+## Offset of .tar section will be placed here
+my $gap_pos = tell($OF);
+print $OF ' 'x40;
+print $OF "\n";
+
+
+print $OF <<EXTRACT_SECTION
+FAKEROOT=`mktemp -d -t ${binfile_name}.data.XXXXXXX`
+trap "rm -rf '\$FAKEROOT'" EXIT
+
+if [ -z \$TAR_OFFSET ]; then
+    echo "*** Something wrong with pack" >&2
+    exit 1
+fi
+
+# it's faster than dd(1)
+{ head -c "\$TAR_OFFSET" >/dev/null; cat; } < "\$0" | tar -C "\$FAKEROOT" -xz -f -
+
+EXTRACT_SECTION
+;
+
+## make symlinks
+for my $link (keys %symlinks) {
+    my $link_dir = "\${FAKEROOT}" . dirname($link); # path to $link is always absolute
+    print $OF "test -d \"$link_dir\" || mkdir -p \"$link_dir\"\n";
+    print $OF "ln -s \"\${FAKEROOT}$symlinks{$link}\" \"\${FAKEROOT}$link\"\n";
+    print $OF "\n";
+}
+
+my %ld_dirs_hash = map { dirname($_) => 1 } (keys %symlinks, keys %libraries);
+my $ld_dirs_list = "";
+for my $dir (keys %ld_dirs_hash) {
+    $ld_dirs_list .= "\"$dir\" ";
+}
+
+print $OF <<EXEC_SECTION
+LD_DIRS=
+for d in $ld_dirs_list; do
+    LD_DIRS="\$LD_DIRS:\${FAKEROOT}\$d" # all \$d are absolute paths
+done
+
+export LD_LIBRARY_PATH="\$LD_LIBRARY_PATH:\$LD_DIRS"
+\$MKSTATIC_EXEC_PREFIX "\${FAKEROOT}$binfile" "\$@"
+exit \$?
+
+
+EXEC_SECTION
+;
+
+binmode $OF;
+my $tar_offset = tell($OF);
+
+## print out packed libs
+my $pack_list = "";
+for my $lib ($binfile, keys %libraries) {
+    $pack_list .= "\"$lib\" ";
+}
+
+## write binary data
+open (my $TARF, "tar -czf - -- $pack_list 2>/dev/null |") or die "Failed to tar libs: $pack_list";
+binmode $TARF;
+while (1) {
+    my $buf;
+    my $nr = sysread($TARF, $buf, 32768);
+    die "Error while making tar: $!" unless (defined $nr);
+    last if ($nr == 0);
+    syswrite($OF, $buf, $nr);
+}
+
+## write offset of binary data
+sysseek($OF, $gap_pos, 0);
+syswrite($OF, "TAR_OFFSET=$tar_offset");
+close $OF;
+
+## make it executable
+my $perm = (stat $outfile)[2];
+chmod( $perm | (~umask() & (S_IXUSR | S_IXGRP | S_IXOTH)), $outfile ) or die "Can't mark $outfile executable";
+
+print "executable package is ready: $outfile\n";
+
+__END__
+=head1 mkstatic
+
+make executable all-in-one package wich contains binary and it's libraries.
+
+=head1 SYNOPSIS
+
+mkstatic [options] binary
+
+mkstatic -h|--help
+
+mkstatic --man
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--exclude|-e>=LIBS
+
+Exclude LIBS given in form of linker-options. For example, '-lz -lpcre' to exclude libz and libpcre.
+
+=item B<--include-sys-libs|-E>
+
+Do not exclude system libraries. By now, system libraries ('-lc -ldl -lrt -lpthread') treats differently than any others. That's because it's usually impossible to preload 'em with LD_LIBRARY_PATH. You'll propably get Segmentation Fault on ld.so(8) using this option.
+
+=item B<--outfile|-o>=OFILE
+
+Write package to OFILE instead of binary.static
+
+=item B<--verbose|-v>
+
+print intermediate messages as well
+
+=item B<--help|-h>
+
+brief help message and exit
+
+=item B<--man>
+
+Show full manpage
+
+=back
+
+=head1 DESCRIPTION
+
+mkstatic creates a package (self-executable Shell-file) from given executable and it's libraries. Dependencies of libraries itself are also included.
+
+The idea is to launch executable file on another machine even if it DOES NOT HAVE all the libraries installed. The goal is similar to statically linked binaries, although it has nothing with actual linkage.
+
+
+Your steps are very straightforward:
+
+=over 8
+
+- You call mkstatic binary_file
+
+- Copy result-file (binary_file.static) to target host
+
+- Launch your/binary_file.static [the same usage as original]
+
+=back
+
+Details of how it works:
+
+o  You launching mkstatic
+
+=over 8
+
+- it collects all dependencied of your binary_file (and remembers symlinks to libraries)
+
+- it creates .tgz wich is actually placed in Shell-file. This archive includes binary, libraries and bootstapping code
+
+- that's all - binary file with .static suffix is your resulting file
+
+=back
+
+o  You launching binary.static
+
+=over 8
+
+- it extracts injected .tgz to it's own temporary dir (using $TMPDIR as prefix, usually /tmp)
+
+- creates symlinks to libraries within tempdir
+
+- fix LD_LIBRARY_PATH to point to tempdir
+
+- launch your binary passing all arguments as usual
+
+=back
+
+=head1 KNOWN BUGS
+
+=over 8
+
+- System libraries can't be injected as any others. So, mkstatic doesn't (even pretend) to replace ld(1) -static.
+
+=back
+
+=head1 SEE ALSO
+
+=over 8
+
+=item B<ld.so>(8), B<makeself>(1)
+
+=back
+
+=cut
