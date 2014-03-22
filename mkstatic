@@ -59,7 +59,7 @@ sub transform_lib_list($) {
 
 sub collect_deps {
     my $file = shift;
-    open(my $LDDRES, "ldd $file |");
+    open(my $LDDRES, "ldd $file 2>/dev/null |");
     while(<$LDDRES>) {
         chomp;
         if (/(\S+) => (\S+) \(\S+\)/) {
@@ -159,7 +159,7 @@ EXTRACT_SECTION
 for my $link (keys %symlinks) {
     my $link_dir = "\${FAKEROOT}" . dirname($link); # path to $link is always absolute
     print $OF "test -d \"$link_dir\" || mkdir -p \"$link_dir\"\n";
-    print $OF "ln -s \"\${FAKEROOT}$symlinks{$link}\" \"\${FAKEROOT}$link\"\n";
+    print $OF "ln -s -f \"\${FAKEROOT}$symlinks{$link}\" \"\${FAKEROOT}$link\"\n";
     print $OF "\n";
 }
 
