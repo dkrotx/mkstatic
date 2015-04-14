@@ -21,9 +21,7 @@ sub readlink_f($) {
 
     while(-l $f) {
         my $link = readlink($f);
-        if ($link !~ /^\//) {
-            $f = File::Spec->canonpath(dirname($f) . '/' . $link);
-        }
+        $f = ($link =~ /^\//) ? $link : File::Spec->canonpath(dirname($f) . '/' . $link);
     }
 
     return $f;
