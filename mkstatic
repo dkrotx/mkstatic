@@ -57,7 +57,7 @@ sub transform_lib_list($) {
 
 sub collect_deps {
     my $file = shift;
-    open(my $LDDRES, "ldd $file 2>/dev/null |");
+    open(my $LDDRES, "ldd -r $file 2>/dev/null |");
     while(<$LDDRES>) {
         chomp;
         if (/(\S+) => (\S+) \(\S+\)/) {
@@ -134,7 +134,14 @@ print $OF "\n";
 
 
 print $OF <<EXTRACT_SECTION
-FAKEROOT=`mktemp -d -t ${binfile_name}.data.XXXXXXX`
+
+[ -z \$TMPDIR ] && FAKEROOT=/tmp/ || FAKEROOT=\$TMPDIR;
+
+FAKEROOT=\$FAKEROOT/${binfile_name}.data.`md5sum \$0 | awk '{print \$1}'`
+
+[ -d "\$FAKEROOT" ] && rm -rf \$FAKEROOT
+mkdir -p \$FAKEROOT
+
 if [ -z \$MKSTATIC_DEBUG ]; then
     trap "rm -rf '\$FAKEROOT'" EXIT
 else
