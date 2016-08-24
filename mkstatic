@@ -142,11 +142,14 @@ FAKEROOT=\$FAKEROOT/${binfile_name}.data.`md5sum \$0 | awk '{print \$1}'`
 [ -d "\$FAKEROOT" ] && rm -rf \$FAKEROOT
 mkdir -p \$FAKEROOT
 
-if [ -z \$MKSTATIC_DEBUG ]; then
-    trap "rm -rf '\$FAKEROOT'" EXIT
-else
+if [ -n "\$MKSTATIC_DEBUG" ]; then
     echo "*** debug mode enabled: will not remove \${FAKEROOT} after exit" >&2
     set -x
+    MKSTATIC_SAVEDIR=1
+fi
+
+if [ -z \$MKSTATIC_SAVEDIR ]; then
+    trap "rm -rf '\$FAKEROOT'" EXIT
 fi
 
 if [ -z \$TAR_OFFSET ]; then
@@ -154,7 +157,6 @@ if [ -z \$TAR_OFFSET ]; then
     exit 1
 fi
 
-# it's faster than dd(1)
 { head -c "\$TAR_OFFSET" >/dev/null; cat; } < "\$0" | tar -C "\$FAKEROOT" -xz -f -
 
 EXTRACT_SECTION
@@ -316,7 +318,9 @@ So, the only way to tune bootstrap-code is environment variables:
 
 =over 8
 
-- MKSTATIC_DEBUG - being set causes binary.static to hold temporary directory after exit.
+- MKSTATIC_SAVEDIR - being set causes binary.static to hold temporary directory after exit.
+
+- MKSTATIC_DEBUG - same as above, + trace option of interpreter
 
 - MKSTATIC_EXEC_PREFIX - prefix binary launching with given command. For example, use env MKSTATIC_EXEC_PREFIX='gdb --args' ... if you want to debug your original binary.
 
